@@ -1,18 +1,17 @@
-# YAML v1.1
-
 vagrant-version: "2.3.2"
-
 vm-boxes:
   - generic/ubuntu2204
   - generic/alma9
-
 network:
   private: 
-    ip-octet-prefix: "172.20.49"
-
-
+    ip-octet-prefix: "172.27.48"
+ssh:
+  keypair:
+    path: .vagrant/credentials/ssh
+    name: ssh-key
 master:
   node-count: 1
+  role: master
   box-name: k8s-master
   memory: 2560
   cpus: 2
@@ -20,10 +19,10 @@ master:
     hostname:
       prefix: k8s-master
     private:
-      ip-octate-suffix: "1"
-
+      ip-octet-suffix: "1"
 worker:
   node-count: 1
+  role: worker
   box-name: k8s-worker
   memory: 2048
   cpus: 2
@@ -31,4 +30,4 @@ worker:
     hostname:
       prefix: k8s-worker
     private:
-      ip-octate-suffix: "2"
+      ip-octet-suffix: "2"

@@ -1,0 +1,163 @@
+---
+- hosts: master
+  become: true
+  vars:
+    cri_o:
+      os: xUbuntu_22.04
+      version: "1.24"
+    k8s:
+      version: "1.25.3"
+  tasks:
+    - name: Remove swapfile from /etc/fstab
+      mount:
+        name: "{{ item }}"
+        fstype: swap
+        state: absent
+      with_items:
+        - swap
+        - none
+
+    - name: Disable swap
+      command: swapoff -a
+      when: ansible_swaptotal_mb > 0
+
+    - name: Install packages that allow apt to be used over HTTPS
+      package:
+        name: "{{ packages }}"
+        state: present
+        update_cache: true
+      vars:
+        packages:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - wget
+          - jq
+          - tmux
+          - gnupg2
+          - software-properties-common
+          - lsb-release
+
+    - name: Add CRI-O network kernel modules
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - overlay
+        - br_netfilter
+
+    - name: Write CRI-O config
+      blockinfile:
+        path: /etc/modules-load.d/crio.conf
+        create: true
+        mode: 0644
+        block: |
+          overlay
+          br_netfilter
+
+    - name: Add apt signing key for CRI-O
+      block:
+        - name: Install CRI-O root key
+          apt_key:
+            url: "{{ root_key_url }}"
+            keyring: /etc/apt/keyrings/libcontainers-archive-keyring.gpg
+            state: present
+
+        - name: Install CRI-O app key
+          apt_key:
+            url: "{{ package_key_url }}"
+            keyring: /etc/apt/keyrings/libcontainers-crio-archive-keyring.gpg
+            state: present
+      vars:
+        root_key_url: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/{{ cri_o.os }}/Release.key"
+        package_key_url: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/{{ cri_o.version }}/{{ cri_o.os }}/Release.key"
+
+    - name: Add CRI-O apt repository for stable version
+      block:
+        - name: Add CRI-O root repository
+          apt_repository:
+            repo: "{{ root_repo }}"
+            state: present
+            filename: devel:kubic:libcontainers:stable
+            update_cache: true
+
+        - name: Add CRI-O package repository
+          apt_repository:
+            repo: "{{ package_repo }}"
+            state: present
+            filename: "devel:kubic:libcontainers:stable:cri-o:{{ cri_o.version }}"
+            update_cache: true
+      vars:
+        root_repo: "deb [signed-by=/etc/apt/keyrings/libcontainers-archive-keyring.gpg] https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/{{ cri_o.os }}/ /"
+        package_repo: "deb [signed-by=/etc/apt/keyrings/libcontainers-crio-archive-keyring.gpg] https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/{{ cri_o.version }}/{{ cri_o.os }}/ /"
+    - name: Install CRI-O packages
+      package:
+        name: "{{ packages }}"
+        state: present
+        update_cache: true
+      vars:
+        packages:
+          - cri-o
+          - cri-o-runc
+          - cri-tools
+          - containernetworking-plugins
+      notify:
+        - Start cri-o service
+
+    - name: Copy k8s cri network config
+      blockinfile:
+        path: /etc/sysctl.d/99-kubernetes-cri.conf
+        create: true
+        mode: 0644
+        block: |
+          net.bridge.bridge-nf-call-iptables = 1
+          net.ipv4.ip_forward = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+
+    - name: Add an apt signing key for Kubernetes
+      get_url:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        dest: /etc/apt/keyrings/kubernetes-archive-keyring.gpg
+
+    - name: Adding apt repository for Kubernetes
+      apt_repository:
+        repo: "{{ package_repo }}"
+        state: present
+        filename: kubernetes
+        update_cache: true
+      vars:
+        package_repo: deb [signed-by=/etc/apt/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main
+
+    - name: Install Kubernetes binaries
+      package:
+        name: "{{ packages }}"
+        state: present
+        update_cache: true
+      vars:
+        packages:
+          - "kubelet={{ k8s.version }}-00"
+          - "kubeadm={{ k8s.version }}-00"
+          - "kubectl={{ k8s.version }}-00"
+
+    - name: Configure node ip
+      lineinfile:
+        path: /etc/default/kubelet
+        line: KUBELET_EXTRA_ARGS=--node-ip={{ current_ip }}
+        create: true
+        mode: 0644
+      notify:
+        - Restart kubelet
+
+  handlers:
+    - name: Start cri-o service
+      service:
+        name: crio
+        enabled: true
+        daemon_reload: true
+        state: started
+
+    - name: Restart kubelet
+      service:
+        name: kubelet
+        daemon_reload: true
+        state: restarted
